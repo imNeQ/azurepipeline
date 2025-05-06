@@ -1,0 +1,91 @@
+trigger: none
+
+parameters:
+  - name: installHost
+    displayName: Choose host for installation (ACC)
+    type: string
+    default: 'host1.domain.net'
+    values:
+      - host1.domain.net
+      - host2.domain.net
+
+  - name: basePath
+    displayName: Base path for deployment (default: P:\PIPELINE)
+    type: string
+    default: 'P:\PIPELINE'
+
+stages:
+  - stage: DeployACC
+    displayName: Deploy to ACC environment
+
+    jobs:
+      - job: CopyToBothHosts
+        displayName: Copy files to both ACC hosts
+        name: CopyJob
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        variables:
+          repoFolder: 'ACC'
+        steps:
+          - checkout: self
+
+          - task: PowerShell@2
+            name: SetDeployFolder
+            displayName: Generate deployment folder path
+            inputs:
+              targetType: inline
+              script: |
+                $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+                $folder = "${{ parameters.basePath }}\PIPELINE_$timestamp"
+                Write-Host "##vso[task.setvariable variable=targetPath;isOutput=true]$folder"
+                Write-Host "Deployment folder path: $folder"
+
+          - task: WindowsMachineFileCopy@2
+            displayName: Copy to host1
+            inputs:
+              SourcePath: '$(Build.SourcesDirectory)\$(repoFolder)'
+              MachineNames: 'host1.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '$(targetPath)'
+
+          - task: WindowsMachineFileCopy@2
+            displayName: Copy to host2
+            inputs:
+              SourcePath: '$(Build.SourcesDirectory)\$(repoFolder)'
+              MachineNames: 'host2.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '$(targetPath)'
+
+      - deployment: InstallOnSelectedHost
+        displayName: Install app on selected ACC host
+        dependsOn: CopyToBothHosts
+        environment: acc-env
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        variables:
+          targetPath: $[ dependencies.CopyJob.outputs['SetDeployFolder.targetPath'] ]
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: PowerShellOnTargetMachines@3
+                  displayName: 'Run install script on selected host'
+                  inputs:
+                    Machines: '${{ parameters.installHost }}'
+                    UserName: '$(NPA)'
+                    UserPassword: '$(pass)'
+                    InlineScript: |
+                      Write-Host "Installation started on $env:COMPUTERNAME"
+                      cd "$(targetPath)"
+                      if (Test-Path ".\install.bat") {
+                        .\install.bat
+                      } elseif (Test-Path ".\install.ps1") {
+                        powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
+                      } else {
+                        Write-Error "No install script found"
+                      }
+                    CommunicationProtocol: 'Http'
