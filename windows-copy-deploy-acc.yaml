@@ -9,15 +9,14 @@ parameters:
       - host1.domain.net
       - host2.domain.net
 
-  - name: customTargetPath
-    displayName: Optional custom target path (leave empty to use default)
+  - name: basePath
+    displayName: Base path for deployment (default: P:\PIPELINE)
     type: string
-    default: ''
+    default: 'P:\PIPELINE'
 
 stages:
   - stage: DeployAndInstall
     displayName: Deploy and Install (ACC)
-    environment: 'acc-deploy-env'
     pool:
       name: CDaaSWin
       vmImage: windows-latest
@@ -28,53 +27,20 @@ stages:
     jobs:
       - job: CopyToBothHosts
         displayName: Copy files to both ACC hosts
+        name: CopyJob
         steps:
           - checkout: self
 
           - task: PowerShell@2
-            name: SetTargetPath
-            displayName: 'Determine target path'
+            displayName: 'Generate deployment folder path'
+            name: SetDeployFolder
             inputs:
               targetType: inline
               script: |
-                if ('${{ parameters.customTargetPath }}' -ne '') {
-                  $finalPath = '${{ parameters.customTargetPath }}'
-                } else {
-                  $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
-                  $finalPath = "P:\PIPELINE\PIPELINE_$timestamp"
-                }
-                Write-Host "##vso[task.setvariable variable=targetPath]$finalPath"
-                Write-Host "Target deployment folder: $finalPath"
-
-          - task: PowerShellOnTargetMachines@3
-            displayName: 'Ensure target folder exists on host1'
-            inputs:
-              Machines: 'host1.domain.net'
-              UserName: '$(NPA)'
-              UserPassword: '$(pass)'
-              InlineScript: |
-                if (!(Test-Path "$(targetPath)")) {
-                  New-Item -ItemType Directory -Path "$(targetPath)" | Out-Null
-                  Write-Host "Created folder: $(targetPath)"
-                } else {
-                  Write-Host "Folder already exists: $(targetPath)"
-                }
-              CommunicationProtocol: 'Http'
-
-          - task: PowerShellOnTargetMachines@3
-            displayName: 'Ensure target folder exists on host2'
-            inputs:
-              Machines: 'host2.domain.net'
-              UserName: '$(NPA)'
-              UserPassword: '$(pass)'
-              InlineScript: |
-                if (!(Test-Path "$(targetPath)")) {
-                  New-Item -ItemType Directory -Path "$(targetPath)" | Out-Null
-                  Write-Host "Created folder: $(targetPath)"
-                } else {
-                  Write-Host "Folder already exists: $(targetPath)"
-                }
-              CommunicationProtocol: 'Http'
+                $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+                $folder = "${{ parameters.basePath }}\PIPELINE_$timestamp"
+                Write-Host "##vso[task.setvariable variable=targetPath;isOutput=true]$folder"
+                Write-Host "Deployment folder will be: $folder"
 
           - task: WindowsMachineFileCopy@2
             displayName: 'Copy to host1'
@@ -97,6 +63,9 @@ stages:
       - job: InstallOnSelectedHost
         displayName: Install app on selected ACC host
         dependsOn: CopyToBothHosts
+        variables:
+          targetPath: $[ dependencies.CopyJob.outputs['SetDeployFolder.targetPath'] ]
+        environment: acc-env    
         steps:
           - task: PowerShellOnTargetMachines@3
             displayName: 'Run install script on selected host'
@@ -105,6 +74,7 @@ stages:
               UserName: '$(NPA)'
               UserPassword: '$(pass)'
               InlineScript: |
+                Write-Host "Installation started on $env:COMPUTERNAME"
                 cd "$(targetPath)"
                 if (Test-Path ".\install.bat") {
                   .\install.bat
