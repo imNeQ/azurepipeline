@@ -1,0 +1,116 @@
+trigger: none
+
+parameters:
+  - name: installHost
+    displayName: Choose host for installation (ACC)
+    type: string
+    default: 'host1.domain.net'
+    values:
+      - host1.domain.net
+      - host2.domain.net
+
+  - name: customTargetPath
+    displayName: Optional custom target path (leave empty to use default)
+    type: string
+    default: ''
+
+stages:
+  - stage: DeployAndInstall
+    displayName: Deploy and Install (ACC)
+    environment: 'acc-deploy-env'
+    pool:
+      name: CDaaSWin
+      vmImage: windows-latest
+
+    variables:
+      repoFolder: 'ACC'
+
+    jobs:
+      - job: CopyToBothHosts
+        displayName: Copy files to both ACC hosts
+        steps:
+          - checkout: self
+
+          - task: PowerShell@2
+            name: SetTargetPath
+            displayName: 'Determine target path'
+            inputs:
+              targetType: inline
+              script: |
+                if ('${{ parameters.customTargetPath }}' -ne '') {
+                  $finalPath = '${{ parameters.customTargetPath }}'
+                } else {
+                  $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+                  $finalPath = "P:\PIPELINE\PIPELINE_$timestamp"
+                }
+                Write-Host "##vso[task.setvariable variable=targetPath]$finalPath"
+                Write-Host "Target deployment folder: $finalPath"
+
+          - task: PowerShellOnTargetMachines@3
+            displayName: 'Ensure target folder exists on host1'
+            inputs:
+              Machines: 'host1.domain.net'
+              UserName: '$(NPA)'
+              UserPassword: '$(pass)'
+              InlineScript: |
+                if (!(Test-Path "$(targetPath)")) {
+                  New-Item -ItemType Directory -Path "$(targetPath)" | Out-Null
+                  Write-Host "Created folder: $(targetPath)"
+                } else {
+                  Write-Host "Folder already exists: $(targetPath)"
+                }
+              CommunicationProtocol: 'Http'
+
+          - task: PowerShellOnTargetMachines@3
+            displayName: 'Ensure target folder exists on host2'
+            inputs:
+              Machines: 'host2.domain.net'
+              UserName: '$(NPA)'
+              UserPassword: '$(pass)'
+              InlineScript: |
+                if (!(Test-Path "$(targetPath)")) {
+                  New-Item -ItemType Directory -Path "$(targetPath)" | Out-Null
+                  Write-Host "Created folder: $(targetPath)"
+                } else {
+                  Write-Host "Folder already exists: $(targetPath)"
+                }
+              CommunicationProtocol: 'Http'
+
+          - task: WindowsMachineFileCopy@2
+            displayName: 'Copy to host1'
+            inputs:
+              SourcePath: '$(Build.SourcesDirectory)\$(repoFolder)'
+              MachineNames: 'host1.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '$(targetPath)'
+
+          - task: WindowsMachineFileCopy@2
+            displayName: 'Copy to host2'
+            inputs:
+              SourcePath: '$(Build.SourcesDirectory)\$(repoFolder)'
+              MachineNames: 'host2.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '$(targetPath)'
+
+      - job: InstallOnSelectedHost
+        displayName: Install app on selected ACC host
+        dependsOn: CopyToBothHosts
+        steps:
+          - task: PowerShellOnTargetMachines@3
+            displayName: 'Run install script on selected host'
+            inputs:
+              Machines: '${{ parameters.installHost }}'
+              UserName: '$(NPA)'
+              UserPassword: '$(pass)'
+              InlineScript: |
+                cd "$(targetPath)"
+                if (Test-Path ".\install.bat") {
+                  .\install.bat
+                } elseif (Test-Path ".\install.ps1") {
+                  powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
+                } else {
+                  Write-Error "No install script found"
+                }
+              CommunicationProtocol: 'Http'
