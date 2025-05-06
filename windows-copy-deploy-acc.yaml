@@ -15,19 +15,18 @@ parameters:
     default: 'P:\PIPELINE'
 
 stages:
-  - stage: DeployAndInstall
-    displayName: Deploy and Install (ACC)
-    pool:
-      name: CDaaSWin
-      vmImage: windows-latest
-
-    variables:
-      repoFolder: 'ACC'
+  - stage: CopyFiles
+    displayName: Copy Files to Both Hosts
 
     jobs:
       - job: CopyToBothHosts
         displayName: Copy files to both ACC hosts
         name: CopyJob
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        variables:
+          repoFolder: 'ACC'
         steps:
           - checkout: self
 
@@ -60,27 +59,37 @@ stages:
               AdminPassword: '$(pass)'
               TargetPath: '$(targetPath)'
 
-      - job: InstallOnSelectedHost
+  - stage: InstallApp
+    displayName: Install Application on Selected Host
+    dependsOn: CopyFiles
+
+    jobs:
+      - deployment: InstallOnSelectedHost
         displayName: Install app on selected ACC host
-        dependsOn: CopyToBothHosts
+        environment: acc-env
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
         variables:
-          targetPath: $[ dependencies.CopyJob.outputs['SetDeployFolder.targetPath'] ]
-        environment: acc-env    
-        steps:
-          - task: PowerShellOnTargetMachines@3
-            displayName: 'Run install script on selected host'
-            inputs:
-              Machines: '${{ parameters.installHost }}'
-              UserName: '$(NPA)'
-              UserPassword: '$(pass)'
-              InlineScript: |
-                Write-Host "Installation started on $env:COMPUTERNAME"
-                cd "$(targetPath)"
-                if (Test-Path ".\install.bat") {
-                  .\install.bat
-                } elseif (Test-Path ".\install.ps1") {
-                  powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
-                } else {
-                  Write-Error "No install script found"
-                }
-              CommunicationProtocol: 'Http'
+          targetPath: $[ dependencies.CopyFiles.outputs['CopyJob.SetDeployFolder.targetPath'] ]
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: PowerShellOnTargetMachines@3
+                  displayName: 'Run install script on selected host'
+                  inputs:
+                    Machines: '${{ parameters.installHost }}'
+                    UserName: '$(NPA)'
+                    UserPassword: '$(pass)'
+                    InlineScript: |
+                      Write-Host "Installation started on $env:COMPUTERNAME"
+                      cd "$(targetPath)"
+                      if (Test-Path ".\install.bat") {
+                        .\install.bat
+                      } elseif (Test-Path ".\install.ps1") {
+                        powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
+                      } else {
+                        Write-Error "No install script found"
+                      }
+                    CommunicationProtocol: 'Http'
