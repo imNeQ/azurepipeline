@@ -40,6 +40,15 @@ stages:
                 "$folder" | Out-File "$(Pipeline.Workspace)\target-path.txt" -Encoding utf8
                 Write-Host "Deployment folder: $folder"
 
+          - task: PowerShell@2
+            name: LoadTargetPath
+            displayName: Load targetPath to pipeline variable
+            inputs:
+              targetType: inline
+              script: |
+                $folder = Get-Content "$(Pipeline.Workspace)\target-path.txt"
+                Write-Host "##vso[task.setvariable variable=targetPath]$folder"
+
           - task: WindowsMachineFileCopy@2
             displayName: Copy to host1
             inputs:
@@ -47,7 +56,7 @@ stages:
               MachineNames: 'host1.domain.net'
               AdminUserName: '$(NPA)'
               AdminPassword: '$(pass)'
-              TargetPath: '${{ parameters.basePath }}\PIPELINE_$(Get-Date -Format 'yyyy-MM-dd_HH-mm')' # fallback
+              TargetPath: '$(targetPath)'
 
           - task: WindowsMachineFileCopy@2
             displayName: Copy to host2
@@ -56,7 +65,7 @@ stages:
               MachineNames: 'host2.domain.net'
               AdminUserName: '$(NPA)'
               AdminPassword: '$(pass)'
-              TargetPath: '${{ parameters.basePath }}\PIPELINE_$(Get-Date -Format 'yyyy-MM-dd_HH-mm')'
+              TargetPath: '$(targetPath)'
 
   - stage: Install
     displayName: Install application
