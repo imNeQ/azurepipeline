@@ -1,0 +1,143 @@
+trigger: none
+
+parameters:
+  - name: installHost
+    displayName: Choose host for installation (ACC)
+    type: string
+    default: 'host1.domain.net'
+    values:
+      - host1.domain.net
+      - host2.domain.net
+
+  - name: basePath
+    displayName: Deployment base path (default: P:\PIPELINE)
+    type: string
+    default: 'P:\PIPELINE'
+
+  - name: packageName
+    displayName: Artifact package name
+    type: string
+    default: 'app-artifact'
+
+  - name: packageVersion
+    displayName: Artifact version
+    type: string
+    default: '1.0.0'
+
+stages:
+  - stage: CopyFiles
+    displayName: Download package and copy to both ACC hosts
+
+    jobs:
+      - job: CopyJob
+        displayName: Copy job
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        variables:
+          artifactPath: '$(System.DefaultWorkingDirectory)\package'
+        steps:
+          - checkout: none
+
+          - task: UniversalPackages@0
+            displayName: Download artifact from Azure Artifacts
+            inputs:
+              command: download
+              downloadDirectory: '$(artifactPath)'
+              feedsToUse: 'internal'
+              vstsFeed: 'Company/P003067-windows-file-transfer'
+              vstsFeedPackage: '${{ parameters.packageName }}'
+              vstsPackageVersion: '${{ parameters.packageVersion }}'
+
+          - task: PowerShell@2
+            name: SetDeployFolder
+            displayName: Generate and save targetPath
+            inputs:
+              targetType: inline
+              script: |
+                $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+                $folder = "${{ parameters.basePath }}\PIPELINE_$timestamp"
+                "$folder" | Out-File "$(Pipeline.Workspace)\target-path.txt" -Encoding utf8
+                Write-Host "Deployment folder: $folder"
+
+          - task: PowerShell@2
+            name: LoadTargetPath
+            displayName: Load targetPath to variable
+            inputs:
+              targetType: inline
+              script: |
+                $folder = Get-Content "$(Pipeline.Workspace)\target-path.txt"
+                Write-Host "##vso[task.setvariable variable=targetPath]$folder"
+
+          - task: WindowsMachineFileCopy@2
+            displayName: Copy to host1
+            inputs:
+              SourcePath: '$(artifactPath)'
+              MachineNames: 'host1.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '$(targetPath)'
+
+          - task: WindowsMachineFileCopy@2
+            displayName: Copy to host2
+            inputs:
+              SourcePath: '$(artifactPath)'
+              MachineNames: 'host2.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '$(targetPath)'
+
+          - task: PublishPipelineArtifact@1
+            displayName: Publish target-path.txt
+            inputs:
+              targetPath: '$(Pipeline.Workspace)\target-path.txt'
+              artifact: target-path
+              publishLocation: pipeline
+
+  - stage: Install
+    displayName: Install application
+    dependsOn: CopyFiles
+
+    jobs:
+      - deployment: InstallOnSelectedHost
+        displayName: Install on selected host
+        environment: acc-env
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: DownloadPipelineArtifact@2
+                  displayName: Download target-path.txt
+                  inputs:
+                    artifact: target-path
+                    path: '$(Pipeline.Workspace)'
+
+                - task: PowerShell@2
+                  name: LoadTargetPath
+                  displayName: Load targetPath from file
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $folder = Get-Content "$(Pipeline.Workspace)\target-path.txt"
+                      Write-Host "##vso[task.setvariable variable=targetPath]$folder"
+                      Write-Host "Target path loaded: $folder"
+
+                - task: PowerShellOnTargetMachines@3
+                  displayName: Run install script on selected host
+                  inputs:
+                    Machines: '${{ parameters.installHost }}'
+                    UserName: '$(NPA)'
+                    UserPassword: '$(pass)'
+                    InlineScript: |
+                      Write-Host "Installing on $env:COMPUTERNAME"
+                      cd "$(targetPath)"
+                      if (Test-Path ".\install.bat") {
+                        .\install.bat
+                      } elseif (Test-Path ".\install.ps1") {
+                        powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
+                      } else {
+                        Write-Error "No install script found in $(targetPath)"
+                    CommunicationProtocol: 'Http'
