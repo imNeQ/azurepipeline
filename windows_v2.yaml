@@ -1,0 +1,101 @@
+trigger: none
+
+parameters:
+  - name: installHost
+    displayName: Choose host for installation (ACC)
+    type: string
+    default: 'host1.domain.net'
+    values:
+      - host1.domain.net
+      - host2.domain.net
+
+  - name: basePath
+    displayName: Deployment base path (default: P:\PIPELINE)
+    type: string
+    default: 'P:\PIPELINE'
+
+stages:
+  - stage: CopyFiles
+    displayName: Copy files to both ACC hosts
+
+    jobs:
+      - job: CopyJob
+        displayName: Copy job
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        variables:
+          repoFolder: 'ACC'
+        steps:
+          - checkout: self
+
+          - task: PowerShell@2
+            name: SetDeployFolder
+            displayName: Generate and save targetPath
+            inputs:
+              targetType: inline
+              script: |
+                $timestamp = Get-Date -Format 'yyyy-MM-dd_HH-mm'
+                $folder = "${{ parameters.basePath }}\PIPELINE_$timestamp"
+                "$folder" | Out-File "$(Pipeline.Workspace)\target-path.txt" -Encoding utf8
+                Write-Host "Deployment folder: $folder"
+
+          - task: WindowsMachineFileCopy@2
+            displayName: Copy to host1
+            inputs:
+              SourcePath: '$(Build.SourcesDirectory)\$(repoFolder)'
+              MachineNames: 'host1.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '${{ parameters.basePath }}\PIPELINE_$(Get-Date -Format 'yyyy-MM-dd_HH-mm')' # fallback
+
+          - task: WindowsMachineFileCopy@2
+            displayName: Copy to host2
+            inputs:
+              SourcePath: '$(Build.SourcesDirectory)\$(repoFolder)'
+              MachineNames: 'host2.domain.net'
+              AdminUserName: '$(NPA)'
+              AdminPassword: '$(pass)'
+              TargetPath: '${{ parameters.basePath }}\PIPELINE_$(Get-Date -Format 'yyyy-MM-dd_HH-mm')'
+
+  - stage: Install
+    displayName: Install application
+    dependsOn: CopyFiles
+
+    jobs:
+      - deployment: InstallOnSelectedHost
+        displayName: Install on selected host
+        environment: acc-env
+        pool:
+          name: CDaaSWin
+          vmImage: windows-latest
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: PowerShell@2
+                  name: LoadTargetPath
+                  displayName: Load targetPath from file
+                  inputs:
+                    targetType: inline
+                    script: |
+                      $folder = Get-Content "$(Pipeline.Workspace)\target-path.txt"
+                      Write-Host "##vso[task.setvariable variable=targetPath]$folder"
+                      Write-Host "Target path loaded: $folder"
+
+                - task: PowerShellOnTargetMachines@3
+                  displayName: Run install script on selected host
+                  inputs:
+                    Machines: '${{ parameters.installHost }}'
+                    UserName: '$(NPA)'
+                    UserPassword: '$(pass)'
+                    InlineScript: |
+                      Write-Host "Installing on $env:COMPUTERNAME"
+                      cd "$(targetPath)"
+                      if (Test-Path ".\install.bat") {
+                        .\install.bat
+                      } elseif (Test-Path ".\install.ps1") {
+                        powershell.exe -ExecutionPolicy Bypass -File .\install.ps1
+                      } else {
+                        Write-Error "No install script found in $(targetPath)"
+                    CommunicationProtocol: 'Http'
